@@ -1,140 +1,123 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
+# vote_scraper.py
+
+import os
+import time
 from datetime import datetime, timedelta
-import pytz
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import json
-import os
-import time
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
 
-# Set timezone ke WIB
-wib = pytz.timezone('Asia/Jakarta')
-
-# Setup Google Sheets credentials
+# ==== Setup Google Sheets ====
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds_json = os.environ.get('CREDS_JSON')
-creds_dict = json.loads(creds_json)
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(creds)
+creds_json = os.environ.get('CREDS_JSON')  # Ambil dari environment di Render
+if creds_json:
+    import json
+    creds = json.loads(creds_json)
+    client = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_dict(creds, scope))
+else:
+    creds = ServiceAccountCredentials.from_json_keyfile_name('creds.json', scope)
+    client = gspread.authorize(creds)
 
-# Buka Spreadsheet
-spreadsheet = client.open_by_key("1ky4L-2L7E5az3yAqglJvWWMmzTCWWZY2sAPmC_5RCkc")
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1ky4L-2L7E5az3yAqglJvWWMmzTCWWZY2sAPmC_5RCkc/edit"
+spreadsheet = client.open_by_url(SHEET_URL)
 
-# Target aktor yang ingin di-track
+sheet_suara = spreadsheet.worksheet("Suara")
+sheet_selisih = spreadsheet.worksheet("Selisih")
+sheet_ringkasan = spreadsheet.worksheet("Ringkasan Harian")
+
 target_names = ["KIM HYE YOON", "IU", "LEE HYE RI", "PARK BO GUM", "BYEON WOO SEOK"]
 
-# Buka atau buat Sheet
-def get_or_create_sheet(sheet_name):
-    try:
-        return spreadsheet.worksheet(sheet_name)
-    except gspread.exceptions.WorksheetNotFound:
-        return spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols="20")
-
-sheet_raw = get_or_create_sheet("Raw Votes")
-sheet_diff = get_or_create_sheet("Selisih Votes")
-sheet_ringkasan = get_or_create_sheet("Ringkasan Harian")
-
-# Header Raw Votes
-header_raw = ["Waktu Ambil"] + target_names
-if sheet_raw.row_count == 0:
-    sheet_raw.append_row(header_raw)
-
-# Header Selisih
-header_diff = ["Waktu Ambil"] + target_names
-if sheet_diff.row_count == 0:
-    sheet_diff.append_row(header_diff)
-
-# Header Ringkasan
-header_ringkasan = ["Tanggal"] + target_names
-if sheet_ringkasan.row_count == 0:
-    sheet_ringkasan.append_row(header_ringkasan)
-
-# Function ambil voting day
-def get_voting_day(dt):
-    dt = dt.astimezone(wib)
-    batas = dt.replace(hour=22, minute=0, second=0, microsecond=0)
-    if dt < batas:
-        return dt.date() - timedelta(days=1)
+# ==== Function to get voting day ====
+def get_voting_day(timestamp):
+    now_wib = timestamp + timedelta(hours=7)
+    cutoff = now_wib.replace(hour=22, minute=0, second=0, microsecond=0)
+    if now_wib < cutoff:
+        return now_wib.date()
     else:
-        return dt.date()
+        return (now_wib + timedelta(days=1)).date()
 
-# Mulai loop utama
-while True:
+# ==== Scrape Data ====
+def scrape_votes():
     try:
-        # Setup WebDriver
         options = Options()
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         driver = webdriver.Chrome(options=options)
 
-        # Buka PRIZM Voting Page
         driver.get("https://global.prizm.co.kr/story/voteforbaeksang")
         time.sleep(5)
 
-        # Ambil waktu
-        waktu_ambil = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
-
-        # Ambil nama aktor & jumlah suara
         names = driver.find_elements(By.CLASS_NAME, "item-title")
         votes = driver.find_elements(By.CLASS_NAME, "item-count")
 
-        data_aktor = {}
-        for name, vote in zip(names, votes):
-            actor_name = name.text.strip().upper()
-            actor_name = actor_name.replace("LEE HYERI", "LEE HYE RI")  # Koreksi nama
-            if actor_name in target_names:
-                vote_clean = int(vote.text.replace(",", ""))
-                data_aktor[actor_name] = vote_clean
+        result = {}
+        for name_element, vote_element in zip(names, votes):
+            name = name_element.text.strip().upper()
+            vote = vote_element.text.strip().replace(",", "")
+            if name in target_names:
+                result[name] = int(vote)
 
-        print("Data aktor yang ketemu:", data_aktor)
+        driver.quit()
+        return result
+    except Exception as e:
+        print(f"Error saat scraping: {e}")
+        return None
 
-        # Siapin data untuk update
-        data_row = [waktu_ambil] + [data_aktor.get(name, 0) for name in target_names]
-        sheet_raw.append_row(data_row)
+# ==== Update Sheets ====
+def update_sheets(vote_data):
+    if not vote_data:
+        print("No data fetched.")
+        return
 
-        # Hitung selisih
-        rows_raw = sheet_raw.get_all_values()
-        if len(rows_raw) > 2:
-            latest = list(map(int, rows_raw[-1][1:]))
-            previous = list(map(int, rows_raw[-2][1:]))
-            selisih = [latest[i] - previous[i] for i in range(len(latest))]
-        else:
-            selisih = [0] * len(target_names)
+    now = datetime.utcnow() + timedelta(hours=7)  # WIB
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
-        data_diff = [waktu_ambil] + selisih
-        sheet_diff.append_row(data_diff)
+    # Update Suara
+    row = [now_str] + [vote_data.get(name, "") for name in target_names]
+    sheet_suara.append_row(row, value_input_option="USER_ENTERED")
 
-        # Update Ringkasan Harian
-        hari_ini = get_voting_day(datetime.now(wib)).strftime("%Y-%m-%d")
-        rows_diff = sheet_diff.get_all_records()
+    # Update Selisih
+    try:
+        existing = sheet_suara.get_all_values()
+        if len(existing) >= 3:
+            prev = existing[-2]
+            prev_votes = list(map(int, prev[1:]))
+            now_votes = list(map(int, row[1:]))
+
+            diff = [now_vote - prev_vote for now_vote, prev_vote in zip(now_votes, prev_votes)]
+            diff_row = [now_str] + diff
+            sheet_selisih.append_row(diff_row, value_input_option="USER_ENTERED")
+    except Exception as e:
+        print(f"Error saat update selisih: {e}")
+
+    # Update Ringkasan Harian
+    try:
+        rows_diff = sheet_selisih.get_all_records()
+        hari_ini = get_voting_day(now).strftime("%Y-%m-%d")
         summary = {name: 0 for name in target_names}
 
         for row in rows_diff:
             waktu_row = datetime.strptime(row["Waktu Ambil"], "%Y-%m-%d %H:%M:%S")
             if get_voting_day(waktu_row).strftime("%Y-%m-%d") == hari_ini:
                 for name in target_names:
-                    summary[name] += int(row[name])
+                    summary[name] += int(row.get(name, 0))
 
-        try:
-            existing_rows = sheet_ringkasan.get_all_records()
-            tanggal_list = [r["Tanggal"] for r in existing_rows]
-            if hari_ini in tanggal_list:
-                idx = tanggal_list.index(hari_ini) + 2
-                sheet_ringkasan.update(f"A{idx}", [[hari_ini] + [summary[name] for name in target_names]])
-            else:
-                sheet_ringkasan.append_row([hari_ini] + [summary[name] for name in target_names])
-        except Exception as e:
-            print(f"Error update ringkasan: {e}")
-
-        driver.quit()
-
+        existing_summary = sheet_ringkasan.get_all_values()
+        if existing_summary and existing_summary[-1][0] == hari_ini:
+            sheet_ringkasan.delete_rows(len(existing_summary))
+        
+        final_row = [hari_ini] + [summary[name] for name in target_names]
+        sheet_ringkasan.append_row(final_row, value_input_option="USER_ENTERED")
     except Exception as e:
-        print(f"Error saat update: {e}")
+        print(f"Error saat update ringkasan: {e}")
 
-    print("Tidur 10 menit...")
-    time.sleep(600)
+# ==== Main Loop ====
+while True:
+    votes = scrape_votes()
+    update_sheets(votes)
+    time.sleep(600)  # 10 menit
 

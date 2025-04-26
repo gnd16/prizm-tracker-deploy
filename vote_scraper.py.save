@@ -1,7 +1,4 @@
-import os
-import time
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from datetime import datetime, timedelta
@@ -9,6 +6,9 @@ import pytz
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import json
+import os
+import time
 
 # Set timezone ke WIB
 wib = pytz.timezone('Asia/Jakarta')
@@ -59,7 +59,10 @@ while True:
         driver.quit()
 
         # Timestamp sekarang
-        waktu_ambil = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        waktu_ambil = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
+
+wib = pytz.timezone('Asia/Jakarta')
+waktu_ambil = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
 
         # Masukkan ke Sheet Suara
         suara_row = [waktu_ambil] + [actor_votes.get(name, 0) for name in target_names]
@@ -86,4 +89,3 @@ while True:
 
     # Tunggu 10 menit
     time.sleep(600)
-
