@@ -76,25 +76,31 @@ def update_sheets(vote_data):
     now = datetime.utcnow() + timedelta(hours=7)  # WIB
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Update Suara
+    # === Update Suara ===
     row = [now_str] + [vote_data.get(name, "") for name in target_names]
     sheet_suara.append_row(row, value_input_option="USER_ENTERED")
 
-    # Update Selisih
+    # === Update Selisih ===
     try:
-        existing = sheet_suara.get_all_values()
-        if len(existing) >= 3:
-            prev = existing[-2]
-            prev_votes = list(map(int, prev[1:]))
-            now_votes = list(map(int, row[1:]))
+        suara_data = sheet_suara.get_all_values()
 
-            diff = [now_vote - prev_vote for now_vote, prev_vote in zip(now_votes, prev_votes)]
-            diff_row = [now_str] + diff
+        if len(suara_data) >= 3:
+            prev_row = suara_data[-2]
+            curr_row = suara_data[-1]
+
+            prev_votes = [int(x.replace(",", "")) if x else 0 for x in prev_row[1:]]
+            curr_votes = [int(x.replace(",", "")) if x else 0 for x in curr_row[1:]]
+
+            selisih_votes = [curr - prev for curr, prev in zip(curr_votes, prev_votes)]
+
+            diff_row = [now_str] + selisih_votes
             sheet_selisih.append_row(diff_row, value_input_option="USER_ENTERED")
+        else:
+            print("Belum cukup data untuk hitung selisih.")
     except Exception as e:
         print(f"Error saat update selisih: {e}")
 
-    # Update Ringkasan Harian
+    # === Update Ringkasan Harian ===
     try:
         rows_diff = sheet_selisih.get_all_records()
         hari_ini = get_voting_day(now).strftime("%Y-%m-%d")
