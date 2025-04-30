@@ -125,4 +125,4 @@ def update_sheets(vote_data):
 while True:
     votes = scrape_votes()
     update_sheets(votes)
- time.sleep(120)  # 120 seconds = 2 minutes
+    time.sleep(120)  # 120 seconds = 2 minutes
